@@ -1,2 +1,2 @@
 # rearc
-rearc take home assignmnet
+rearc take home assignment
