@@ -1,0 +1,62 @@
+bundle:
+  name: rearc_quest
+
+variables:
+  catalog:
+    default: rearc
+  schema:
+    default: rearc_quest
+  contact_email:
+    description: Sent in the User-Agent to BLS, as required by https://www.bls.gov/bls/pss.htm
+
+resources:
+  schemas:
+    rearc_quest:
+      catalog_name: ${var.catalog}
+      name: ${var.schema}
+
+  volumes:
+    raw:
+      catalog_name: ${var.catalog}
+      schema_name: ${resources.schemas.rearc_quest.name}
+      name: raw
+      volume_type: MANAGED
+
+  pipelines:
+    rearc_quest_pipeline:
+      name: rearc_quest_pipeline
+      catalog: ${var.catalog}
+      schema: ${resources.schemas.rearc_quest.name}
+      serverless: true
+      root_path: ./src/pipeline
+      libraries:
+        - glob:
+            include: ./src/pipeline/**
+      configuration:
+        raw_root: /Volumes/${var.catalog}/${resources.schemas.rearc_quest.name}/raw
+
+  jobs:
+    rearc_quest_job:
+      name: rearc_quest_job
+      tasks:
+        - task_key: ingest
+          environment_key: default
+          spark_python_task:
+            python_file: ./src/ingest.py
+            parameters:
+              - --target=/Volumes/${var.catalog}/${resources.schemas.rearc_quest.name}/raw
+              - --contact-email=${var.contact_email}
+        - task_key: refresh_pipeline
+          depends_on:
+            - task_key: ingest
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.rearc_quest_pipeline.id}
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"
+
+targets:
+  dev:
+    mode: development
+    default: true
