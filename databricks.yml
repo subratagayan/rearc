@@ -29,9 +29,16 @@ resources:
       schema: ${resources.schemas.rearc_quest.name}
       serverless: true
       root_path: ./src/pipeline
+      # alternatives.py / alternatives.sql are documented alternatives and deliberately not run.
       libraries:
-        - glob:
-            include: ./src/pipeline/**
+        - file:
+            path: ./src/pipeline/bronze.py
+        - file:
+            path: ./src/pipeline/silver.sql
+        - file:
+            path: ./src/pipeline/gold.sql
+        - file:
+            path: ./src/pipeline/gold.py
       configuration:
         raw_root: /Volumes/${var.catalog}/${resources.schemas.rearc_quest.name}/raw
 

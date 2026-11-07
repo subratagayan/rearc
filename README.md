@@ -11,7 +11,7 @@ src/pipeline/bronze.py      Auto Loader streaming tables (schema + non-null key 
 src/pipeline/silver.sql     active file versions only; trimmed, typed, de-duplicated
 src/pipeline/gold.sql       Q1, Q3 (primary, Spark SQL)
 src/pipeline/gold.py        Q2 (primary, PySpark)
-src/pipeline/alternatives.* Q1/Q3 in PySpark, Q2 in Spark SQL
+src/pipeline/alternatives.* Q1/Q3 in PySpark, Q2 in Spark SQL (documented, not run by the pipeline)
 ```
 
 ## Deploy and run

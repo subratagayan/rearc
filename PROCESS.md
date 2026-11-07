@@ -36,6 +36,14 @@ the way in:
 - Rows with the wrong field count or null keys are dropped.
 - DataUSA is read with an explicit schema.
 
+**Why versioned file paths.** Auto Loader identifies files by path. With the default
+`cloudFiles.allowOverwrites = false`, a file overwritten in place at the same path is never picked up
+again, so an upstream change would be silently missed. Turning `allowOverwrites` on re-reads the whole
+file, but the old and new rows then share one path in bronze, and nothing tells you which is current.
+So ingestion never overwrites anything. Every new or changed file gets a new `<version>/` directory,
+which Auto Loader treats as a new file. Bronze records `_metadata.file_path` on each row, and silver
+uses that path to keep only the version listed in `active_files.json`.
+
 Data files are found by the glob `*.data.*`, so a new data partition gets picked up without code
 changes.
 
@@ -51,8 +59,9 @@ and value with expectations. `value` is stored as `DECIMAL(18,3)` so sums are ex
 - **Q2: PySpark is primary.** The window "top-1 per group" logic is easier to compose and comment in
   PySpark.
 
-Each question also has an alternative in the other language, materialised as `alt_*` tables. I checked
-locally that each pair returns identical rows.
+Each question also has an alternative in the other language (`alternatives.py` / `alternatives.sql`).
+They are documented alternatives only: the pipeline runs just the primary versions, so the alternatives
+aren't deployed as tables. I checked locally that each pair returns identical rows.
 
 **Decisions taken after reading the provider docs:**
 - **Q05 is excluded from Q2.** `pr.period` defines `Q05` as the *Annual Average*. Summing it with Q01–Q04
@@ -127,7 +136,6 @@ The hardest part was the data semantics, not the code:
 - the annual-average period hidden among the quarters,
 - the two overlapping data files,
 - padded fields and CRLF line endings,
-- the deprecated DataUSA endpoint.
 
 The other hard part was making re-runs correct when files change or disappear. On deployment, the
 surprise was Free Edition's egress whitelist — the ingest task failed on DNS before any code ran, which
