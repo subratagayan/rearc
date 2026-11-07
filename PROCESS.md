@@ -96,6 +96,33 @@ Verified in the workspace: `gold_population_stats` = 6 years, mean 322,069,808, 
 4,158,441.04; `gold_best_year_by_series` = 283 rows; `gold_series_population` = 39 rows — all matching
 the local run.
 
+### Workspace screenshots
+
+Pipeline run: bronze → silver → gold, all flows completed, expectations met.
+
+![Pipeline graph](docs/images/pipeline_graph.png)
+
+The pipeline succeeded. The job's red run is the `ingest` task, which failed because Free Edition blocks
+outbound access to bls.gov. Ingestion was run locally instead (see above).
+
+![Jobs and pipelines](docs/images/jobs_and_pipelines.png)
+
+Resulting schema: 10 pipeline tables and the `raw` Volume.
+
+![Catalog tables](docs/images/catalog_tables.png)
+
+Q1: `gold_population_stats`
+
+![Q1 result](docs/images/q1_population_stats.png)
+
+Q2: `gold_best_year_by_series` (283 series)
+
+![Q2 result](docs/images/q2_best_year_count.png)
+
+Q3: `gold_series_population` (39 rows; population is null outside ACS 1-year coverage)
+
+![Q3 result](docs/images/q3_series_population.png)
+
 ## Trade-offs / what I'd change for a real client
 
 - **Volume.** For very large snapshot files I'd replace the silver MV with `AUTO CDC FROM SNAPSHOT`. It
