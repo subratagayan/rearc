@@ -39,3 +39,30 @@ databricks bundle run rearc_quest_pipeline
 | Q1 mean / stddev of US population 2013–2018 | `gold_population_stats` | mean 322,069,808; sample stddev 4,158,441.04 (population stddev 3,796,119.94) |
 | Q2 best year per series | `gold_best_year_by_series` | 283 series, e.g. PRS30006011 → 2022 (16.4) |
 | Q3 PRS30006032 Q01 + population | `gold_series_population` | 39 years, population where ACS has it |
+
+## Workspace screenshots (Free Edition, dev target)
+
+Pipeline run: bronze → silver → gold, all flows completed, expectations met.
+
+![Pipeline graph](docs/images/pipeline_graph.png)
+
+The pipeline succeeded. The job's red run is the `ingest` task, which failed because Free Edition blocks
+outbound access to bls.gov. Ingestion was run locally instead (see above).
+
+![Jobs and pipelines](docs/images/jobs_and_pipelines.png)
+
+Resulting schema: 10 pipeline tables and the `raw` Volume.
+
+![Catalog tables](docs/images/catalog_tables.png)
+
+Q1: `gold_population_stats`
+
+![Q1 result](docs/images/q1_population_stats.png)
+
+Q2: `gold_best_year_by_series` (283 series)
+
+![Q2 result](docs/images/q2_best_year_count.png)
+
+Q3: `gold_series_population` (39 rows; population is null outside ACS 1-year coverage)
+
+![Q3 result](docs/images/q3_series_population.png)
