@@ -63,6 +63,29 @@ first run, so nothing needs a `CREATE TABLE` upfront. Both streaming tables and 
 ordinary Unity Catalog Delta tables that consumers query with plain SQL. Only the pipeline writes to
 them. "Streaming" here describes how a flow writes the table, not a job that's always running: this
 pipeline is triggered, so it processes what changed and then stops.
+
+```
+Volume: raw files, one folder per version
+  bls/pr/*.data.*/<ver>/      ── Auto Loader ──▶  bronze_bls_data     (streaming table)
+  bls/pr/*.series/<ver>/      ── Auto Loader ──▶  bronze_bls_series   (streaming table)
+  datausa/population/<ver>/   ── Auto Loader ──▶  bronze_population   (streaming table)
+  _state/active_files.json    ── full read   ──▶  active_files        (materialized view)
+        │
+        │  join bronze to active_files (live versions only), cast types, one row per key
+        ▼
+  *_snapshot                                                          (temporary views)
+        │
+        │  AUTO CDC FROM SNAPSHOT: insert / update / delete only what changed
+        ▼
+  silver_bls_observations, silver_bls_series, silver_population      (streaming tables, SCD 1)
+        │
+        │  Enzyme refresh: NO_OP / incremental / full recompute
+        ▼
+  gold_population_stats (Q1)
+  gold_best_year_by_series (Q2)                                       (materialized views)
+  gold_series_population (Q3)
+```
+
 - **Bronze: streaming tables (Auto Loader).** The raw files are immutable and append-only, which is
   what Auto Loader is built for. Each file version is read once and never re-scanned.
 - **`active_files`: materialized view.** It is one small state file that ingestion rewrites at the
@@ -153,11 +176,8 @@ would quietly publish a plausible stddev over five years.
 - **Second run, with no upstream change:** silver's `MERGE` read 0 source rows and inserted, updated
   and deleted 0 rows. All three gold tables were planned as `NO_OP`.
 
-**Workspace screenshots.** These were taken on 2026-11-07, before silver moved to `AUTO CDC`, so the
-pipeline graph still shows the silver tables as materialized views. The gold answers are the same in
-the current design.
-
-Pipeline run: bronze → silver → gold, all flows completed and all expectations met.
+**Workspace screenshots.** Pipeline run: bronze → silver → gold, all flows completed and all
+expectations met.
 
 ![Pipeline graph](docs/images/pipeline_graph.png)
 
@@ -190,14 +210,6 @@ Q3: `gold_series_population` (39 rows; population is null for years outside ACS 
 - Each question also has an alternative in the other language (`alternatives.py`,
   `alternatives.sql`). These are documentation only and not deployed. I checked locally that each pair
   returns identical rows.
-
-**Data decisions, based on the provider docs:**
-- Q2 excludes `Q05`. `pr.period` defines it as the annual average, so including it would double count.
-- 54 series publish only annual averages, so 283 of the 337 series appear in Q2.
-- Q2 ties go to the earliest year. The label is BLS's `series_title`.
-- Q1 reports the sample stddev, plus the population stddev for reference. The update fails if any of
-  the six years is missing.
-- Q3 uses a LEFT JOIN, because ACS 1-year data doesn't exist before 2013 or for 2020.
 
 ## Trade-offs
 
