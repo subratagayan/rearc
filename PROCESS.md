@@ -95,6 +95,48 @@ sources.
 - The technique each refresh used is in the pipeline event log, under
   `event_type = 'planning_information'`.
 
+**How the silver diff works.** On every update, `AUTO CDC FROM SNAPSHOT` reads the whole
+`*_snapshot` view and compares it with the target, key by key:
+- a new key is inserted,
+- a key with any changed non-key column is updated,
+- a key that disappeared is deleted,
+- an identical row is not written.
+
+So the read is a full scan of the active data (about 92k rows), while the write is proportional to
+what changed. `version` is not a silver column, so re-ingesting identical content writes nothing.
+
+**`AUTO CDC` vs. a hand-written `MERGE`.** A `MERGE ... WHEN NOT MATCHED BY SOURCE THEN DELETE` over
+the same snapshot would produce the same table. Gold could still refresh incrementally, because Enzyme
+works from any Delta source with row tracking. I chose `AUTO CDC` because it keeps silver inside the
+pipeline, which gives:
+- dependency ordering,
+- expectations and event-log metrics,
+- checkpointing,
+- key handling, with no `MERGE` statement to keep in sync with the snapshot's columns.
+
+A separate `MERGE` job would only make sense if something outside the pipeline had to write to silver.
+
+**Why not CDF-based `AUTO CDC`.** Bronze is append-only, loaded from files:
+- A republished file arrives as a new set of inserts, not as updates.
+- A file deleted upstream produces no event at all.
+- Which version is live is recorded in `active_files.json`, not in bronze's change feed.
+
+The source publishes snapshots, so a snapshot diff is the correct way to derive changes.
+
+**How gold knows what changed.** Silver has row tracking and deletion vectors enabled. On each
+refresh, Enzyme reads silver's row-level changes since gold's last refresh. It then chooses
+`NO_OP`, an incremental technique, or `COMPLETE_RECOMPUTE`, based on the query shape and cost. If
+silver were a materialized view, it would mostly recompute in full, for three reasons:
+- it joins on a moving `active_files` set,
+- it de-duplicates across files,
+- it must delete rows.
+
+Every refresh would then rewrite all of silver and push gold into full recomputes as well.
+
+**Gold guard.** `gold_population_stats` has `EXPECT (years = 6) ON VIOLATION FAIL UPDATE`. If a year
+goes missing upstream, the refresh fails and the previous correct result stays. Otherwise the query
+would quietly publish a plausible stddev over five years.
+
 **Verified on the workspace** (the schema was dropped and rebuilt from scratch, 2026-11-09 data):
 
 | Table | Rows |
@@ -133,7 +175,8 @@ sources.
 What I'd do differently for a real client:
 - **Data volume.** Silver writes only the changes, but it still reads the active snapshot on every
   update to compute the diff. At larger scale I'd switch to historical snapshots keyed on the ingest
-  version, so a run with no upstream change skips silver entirely. I'd also expire old raw versions
+  version: the source function returns a new snapshot only when the ingest version changes, so a run
+  with no upstream change skips the read and the diff entirely. I'd also expire old raw versions
   with a retention job.
 - **Schema drift.** Today any drift fails fast. I'd add a rescued-data column plus alerts, so additive
   changes don't block the pipeline.
