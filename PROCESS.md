@@ -2,7 +2,25 @@
 
 ## Architecture
 
-**Ingestion (`src/ingest.py`).** A standalone script lands raw files in one Unity Catalog Volume:
+**One schema per layer.** Each medallion layer has its own Unity Catalog schema. The bundle declares
+them, and in dev mode it prefixes the names, e.g. `rearc.dev_subratagayanhitk_bronze`.
+
+| Schema | Contains |
+|---|---|
+| `bronze` | the `raw` Volume, `active_files`, `bronze_bls_data`, `bronze_bls_series`, `bronze_population` |
+| `silver` | `silver_bls_observations`, `silver_bls_series`, `silver_population` |
+| `gold` | `gold_population_stats` (Q1), `gold_best_year_by_series` (Q2), `gold_series_population` (Q3) |
+
+- One pipeline publishes to all three schemas. Bronze is its default schema.
+- Silver and gold datasets use fully qualified names, built from the `silver_schema` and
+  `gold_schema` pipeline configuration values. The same code therefore deploys to any catalog or
+  target.
+- The split makes access control simple: an analyst gets `SELECT` on the gold schema and nothing
+  else (see Bonus).
+- It also keeps each layer's purpose and lifecycle visible in the catalog.
+
+**Ingestion (`src/ingest.py`).** A standalone script lands raw files in the `raw` Volume, in the
+bronze schema:
 
 ```
 bls/pr/<file>/<version>/<file>                  immutable versions of each BLS file
@@ -65,7 +83,8 @@ them. "Streaming" here describes how a flow writes the table, not a job that's a
 pipeline is triggered, so it processes what changed and then stops.
 
 ```
-Volume: raw files, one folder per version
+[bronze schema]
+Volume raw: one folder per file version
   bls/pr/*.data.*/<ver>/      ── Auto Loader ──▶  bronze_bls_data     (streaming table)
   bls/pr/*.series/<ver>/      ── Auto Loader ──▶  bronze_bls_series   (streaming table)
   datausa/population/<ver>/   ── Auto Loader ──▶  bronze_population   (streaming table)
@@ -77,10 +96,12 @@ Volume: raw files, one folder per version
         │
         │  AUTO CDC FROM SNAPSHOT: insert / update / delete only what changed
         ▼
+[silver schema]
   silver_bls_observations, silver_bls_series, silver_population      (streaming tables, SCD 1)
         │
         │  Enzyme refresh: NO_OP / incremental / full recompute
         ▼
+[gold schema]
   gold_population_stats (Q1)
   gold_best_year_by_series (Q2)                                       (materialized views)
   gold_series_population (Q3)
@@ -160,7 +181,8 @@ Every refresh would then rewrite all of silver and push gold into full recompute
 goes missing upstream, the refresh fails and the previous correct result stays. Otherwise the query
 would quietly publish a plausible stddev over five years.
 
-**Verified on the workspace** (the schema was dropped and rebuilt from scratch, 2026-11-09 data):
+**Verified on the workspace** (rebuilt from scratch into the bronze/silver/gold schemas, 2026-11-09
+data):
 
 | Table | Rows |
 |---|---|
@@ -176,9 +198,12 @@ would quietly publish a plausible stddev over five years.
 - **Second run, with no upstream change:** silver's `MERGE` read 0 source rows and inserted, updated
   and deleted 0 rows. All three gold tables were planned as `NO_OP`.
 
-**Workspace screenshots.** Pipeline run: bronze → `*_snapshot` views → silver → gold, all flows
-completed and all expectations met. The table list counts 13: the 10 tables plus the 3 temporary
-snapshot views.
+**Workspace screenshots.** Some of these were taken before the split into bronze, silver and gold
+schemas, so they show the earlier single schema `dev_subratagayanhitk_rearc_quest`. The tables and
+results are the same.
+
+Pipeline run: bronze → `*_snapshot` views → silver → gold, all flows completed and all expectations
+met. The table list counts 13: the 10 tables plus the 3 temporary snapshot views.
 
 ![Pipeline graph](docs/images/pipeline_graph.png)
 
@@ -187,7 +212,8 @@ bls.gov, so I ran ingestion locally and uploaded the files.
 
 ![Jobs and pipelines](docs/images/jobs_and_pipelines.png)
 
-The resulting schema has 10 pipeline tables and the `raw` Volume.
+Catalog view: `dev_subratagayanhitk_bronze` holds 4 tables and the `raw` Volume, `_silver` holds 3
+tables, and `_gold` holds 3 tables.
 
 ![Catalog tables](docs/images/catalog_tables.png)
 
@@ -230,9 +256,9 @@ What I'd do differently for a real client:
   with a retention job.
 - **Schema drift.** Today any drift fails fast. I'd add a rescued-data column plus alerts, so additive
   changes don't block the pipeline.
-- **Access control.** The analyst already gets gold-only table grants (see Bonus). For a client I'd
-  also put each layer in its own schema, so a schema-level grant on gold is safe and covers new gold
-  tables automatically. I'd manage grants in the bundle and run jobs as a service principal.
+- **Access control.** The analyst already has read access to the gold schema only (see Bonus). For a
+  client I'd also manage the grants in the bundle instead of a SQL script, and run jobs as a service
+  principal.
 - **Monitoring.** Alert on expectation metrics from the pipeline event log, send job failure
   notifications, and add a freshness check against the BLS release calendar.
 - **Cost.** Run serverless on a daily or release-aligned schedule. A run with no upstream changes
@@ -268,8 +294,9 @@ How I validated and corrected its output:
   history (`MERGE` metrics) and the event log (`planning_information`).
 - **I audited the access grants.** My first version granted `SELECT` on the whole schema. A review
   with the assistant pointed out two problems: that grant also exposed bronze, silver and
-  `active_files`, and `account users` held `ALL PRIVILEGES` on the catalog. I replaced the first with
-  table-level grants on gold, revoked the second, and checked the result with `SHOW GRANTS`.
+  `active_files`, and `account users` held `ALL PRIVILEGES` on the catalog. I revoked the catalog
+  grant, then split the layers into separate schemas, so read access to gold can be granted at the
+  schema level. I checked the result with `SHOW GRANTS`.
 
 ## Retrospective
 
@@ -308,18 +335,17 @@ The second page, *Population & Series Trends*, shows:
 
 ### Unity Catalog access for a read-only analyst
 
-The `analyst` principal can read the three gold tables and nothing else. The grants are in
+The `analyst` principal can read the gold layer and nothing else. The grants are in
 `sql/grant_gold_readonly_analyst.sql`:
 
 | Object | `analyst` gets | Why |
 |---|---|---|
 | Catalog `rearc` | `USE CATALOG` | needed to reach the schema; gives no data access |
-| Schema `dev_..._rearc_quest` | `USE SCHEMA` | needed to reach the tables; gives no data access |
-| `gold_population_stats`, `gold_best_year_by_series`, `gold_series_population` | `SELECT` | the only data the analyst can read |
-| bronze, silver, `active_files`, the `raw` Volume | nothing | |
+| Schema `dev_..._gold` | `USE SCHEMA`, `SELECT` | reads all gold tables, including gold tables added later |
+| Schemas `dev_..._silver`, `dev_..._bronze` (including the `raw` Volume) | nothing | |
 
-- **Table-level, not schema-level.** All layers share one schema in this bundle, so `SELECT ON SCHEMA`
-  would also expose bronze and silver. I granted `SELECT` on each gold table instead.
+- **Schema-level grant on gold.** Each layer has its own schema, so `SELECT ON SCHEMA` on gold
+  exposes only the three answer tables. It also covers new gold tables without another grant.
 - **Default catalog grants removed.** The catalog gave `account users` `ALL PRIVILEGES` and `MANAGE`,
   which would let any user, the analyst included, modify or drop tables. I revoked both, along with
   `EXTERNAL USE SCHEMA`. Only `READ METADATA` remains.
@@ -329,11 +355,11 @@ The `analyst` principal can read the three gold tables and nothing else. The gra
 The grants were verified with `SHOW GRANTS` on 2026-11-09:
 
 ```
-CATALOG rearc                     analyst        USE CATALOG
-                                  account users  READ METADATA
-SCHEMA  dev_..._rearc_quest       analyst        USE SCHEMA
-TABLE   gold_best_year_by_series  analyst        SELECT        (same for the other two gold tables)
-TABLE   silver_bls_observations   (no analyst grant; it inherits only account users' READ METADATA)
+CATALOG rearc                analyst        USE CATALOG
+                             account users  READ METADATA
+SCHEMA  dev_..._gold         analyst        USE SCHEMA, SELECT
+SCHEMA  dev_..._silver       (no analyst grant; only account users' READ METADATA inherited)
+SCHEMA  dev_..._bronze       (no analyst grant; only account users' READ METADATA inherited)
 ```
 
 `analyst` is an account-level group. Analysts get access by being added to it, and the grants never
@@ -341,22 +367,19 @@ name individual users.
 
 ![analyst group](docs/images/access_to_analyst_principal2.png)
 
-The grant statements as run in the SQL editor: the schema-level `SELECT` is revoked and replaced by
-`SELECT` on the three gold tables.
-
-![Grants to analyst](docs/images/access_to_analyst_principal1.png)
-
 ### Deployed with Databricks Asset Bundles
 
-Nothing was created by clicking through the UI. `databricks.yml` declares all four resources:
-- the schema,
-- the managed `raw` Volume,
-- the serverless pipeline, with its source files and `raw_root` configuration,
+Nothing was created by clicking through the UI. `databricks.yml` declares every resource:
+- the `bronze`, `silver` and `gold` schemas,
+- the managed `raw` Volume, in bronze,
+- the serverless pipeline, with its source files and configuration (`raw_root`, `silver_schema`,
+  `gold_schema`),
 - the job, with an `ingest` task followed by a `refresh_pipeline` task.
 
 The catalog and contact email are passed as bundle variables. The `dev` target runs in development
-mode, so resource names get a `[dev subratagayanhitk]` prefix and the schema becomes
-`dev_subratagayanhitk_rearc_quest`. Both are visible in the screenshots above.
+mode, so:
+- resource names get a `[dev subratagayanhitk]` prefix,
+- the schemas become `dev_subratagayanhitk_bronze`, `_silver` and `_gold`.
 
 The commands I ran:
 
@@ -366,14 +389,29 @@ databricks bundle deploy   --var catalog=rearc --var contact_email=...
 databricks bundle run rearc_quest_pipeline --var catalog=rearc --var contact_email=...
 ```
 
-`bundle deploy`, run after dropping the schema, created everything again from code:
+The split into layer schemas was itself a bundle change. `bundle plan` showed the diff, and
+`bundle deploy` applied it from code:
 
 ```
-Uploading bundle files to /Workspace/Users/subratagayanhitk@gmail.com/.bundle/rearc_quest/dev/files...
-Created schemas.rearc_quest
+$ databricks bundle plan ...
+update jobs.rearc_quest_job
+update pipelines.rearc_quest_pipeline
+create schemas.bronze
+create schemas.gold
+delete schemas.rearc_quest
+create schemas.silver
+recreate volumes.raw
+Plan: 4 to add, 2 to change, 2 to delete, 0 unchanged
+
+$ databricks bundle deploy --auto-approve ...
+Deleted schemas.rearc_quest
+Created schemas.bronze
+Created schemas.silver
+Created schemas.gold
+Recreated volumes.raw
 Updated pipelines.rearc_quest_pipeline
-Created volumes.raw
-Resources: 2 created, 1 changed, 0 deleted, 1 unchanged
+Updated jobs.rearc_quest_job
+Resources: 4 created, 2 changed, 2 deleted, 0 unchanged
 ```
 
 `bundle validate` and `bundle summary` show the deployed resources:
@@ -389,8 +427,10 @@ Validation OK!
 Resources:
   Jobs:      rearc_quest_job      -> [dev subratagayanhitk] rearc_quest_job
   Pipelines: rearc_quest_pipeline -> [dev subratagayanhitk] rearc_quest_pipeline
-  Schemas:   rearc_quest          -> dev_subratagayanhitk_rearc_quest
-  Volumes:   raw                  -> raw
+  Schemas:   bronze               -> dev_subratagayanhitk_bronze
+             silver               -> dev_subratagayanhitk_silver
+             gold                 -> dev_subratagayanhitk_gold
+  Volumes:   raw                  -> raw (in dev_subratagayanhitk_bronze)
 ```
 
 A prod deployment would add a `prod` target with its own catalog and a service principal as

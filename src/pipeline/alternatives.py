@@ -6,11 +6,14 @@ They run in the pipeline too, so both implementations can be compared side by si
 from pyspark import pipelines as dp
 from pyspark.sql import functions as F
 
+SILVER = spark.conf.get("silver_schema")  # noqa: F821
+GOLD = spark.conf.get("gold_schema")  # noqa: F821
 
-@dp.materialized_view(comment="Q1 alternative in PySpark - must match gold_population_stats.")
+
+@dp.materialized_view(name=f"{GOLD}.alt_population_stats_py", comment="Q1 alternative in PySpark - must match gold_population_stats.")
 def alt_population_stats_py():
     return (
-        spark.read.table("silver_population")  # noqa: F821
+        spark.read.table(f"{SILVER}.silver_population")  # noqa: F821
         .where(F.col("year").between(2013, 2018))
         .agg(
             F.count("*").alias("years"),
@@ -21,10 +24,10 @@ def alt_population_stats_py():
     )
 
 
-@dp.materialized_view(comment="Q3 alternative in PySpark - must match gold_series_population.")
+@dp.materialized_view(name=f"{GOLD}.alt_series_population_py", comment="Q3 alternative in PySpark - must match gold_series_population.")
 def alt_series_population_py():
-    obs = spark.read.table("silver_bls_observations").where(  # noqa: F821
+    obs = spark.read.table(f"{SILVER}.silver_bls_observations").where(  # noqa: F821
         (F.col("series_id") == "PRS30006032") & (F.col("period") == "Q01")
     )
-    pop = spark.read.table("silver_population").select("year", "population")  # noqa: F821
+    pop = spark.read.table(f"{SILVER}.silver_population").select("year", "population")  # noqa: F821
     return obs.join(pop, "year", "left").select("series_id", "year", "period", "value", "population")

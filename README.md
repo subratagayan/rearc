@@ -5,14 +5,14 @@ Volume and modelled as a Spark Declarative Pipeline (bronze → silver → gold)
 Asset Bundle.
 
 ```
-databricks.yml              schema, volume, pipeline and job
+databricks.yml              bronze/silver/gold schemas, raw Volume (in bronze), pipeline and job
 src/ingest.py               Step 1: BLS directory sync + DataUSA fetch into the Volume
 src/pipeline/bronze.py      Auto Loader streaming tables (schema + non-null key expectations)
 src/pipeline/silver.py      AUTO CDC FROM SNAPSHOT: incremental insert/update/delete of active versions
 src/pipeline/gold.sql       Q1, Q3 (primary, Spark SQL)
 src/pipeline/gold.py        Q2 (primary, PySpark)
 src/pipeline/alternatives.* Q1/Q3 in PySpark, Q2 in Spark SQL (documented, not run by the pipeline)
-sql/grant_gold_readonly_analyst.sql  Unity Catalog grants: read-only analyst on the gold tables only
+sql/grant_gold_readonly_analyst.sql  Unity Catalog grants: read-only analyst on the gold schema only
 ```
 
 ## Deploy and run
@@ -29,7 +29,7 @@ upload the files, then refresh the pipeline:
 
 ```bash
 python src/ingest.py --target ./raw --contact-email you@example.com
-databricks fs cp -r --overwrite ./raw dbfs:/Volumes/<catalog>/<schema>/raw
+databricks fs cp -r --overwrite ./raw dbfs:/Volumes/<catalog>/<bronze_schema>/raw   # dev: dev_<user>_bronze
 databricks bundle run rearc_quest_pipeline
 ```
 

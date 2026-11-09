@@ -4,21 +4,29 @@ bundle:
 variables:
   catalog:
     default: rearc
-  schema:
-    default: rearc_quest
   contact_email:
     description: Sent in the User-Agent to BLS, as required by https://www.bls.gov/bls/pss.htm
 
 resources:
+  # One schema per medallion layer. In dev mode the bundle prefixes them, e.g. dev_<user>_bronze.
   schemas:
-    rearc_quest:
+    bronze:
       catalog_name: ${var.catalog}
-      name: ${var.schema}
+      name: bronze
+      comment: Raw files (Volume), ingestion state and bronze streaming tables.
+    silver:
+      catalog_name: ${var.catalog}
+      name: silver
+      comment: Cleaned, typed, de-duplicated tables maintained by AUTO CDC FROM SNAPSHOT.
+    gold:
+      catalog_name: ${var.catalog}
+      name: gold
+      comment: Answer tables (materialized views) for analysts, Genie and dashboards.
 
   volumes:
     raw:
       catalog_name: ${var.catalog}
-      schema_name: ${resources.schemas.rearc_quest.name}
+      schema_name: ${resources.schemas.bronze.name}
       name: raw
       volume_type: MANAGED
 
@@ -26,7 +34,8 @@ resources:
     rearc_quest_pipeline:
       name: rearc_quest_pipeline
       catalog: ${var.catalog}
-      schema: ${resources.schemas.rearc_quest.name}
+      # Default schema: bronze. Silver and gold datasets are published with fully qualified names.
+      schema: ${resources.schemas.bronze.name}
       serverless: true
       root_path: ./src/pipeline
       # alternatives.py / alternatives.sql are documented alternatives and deliberately not run.
@@ -40,7 +49,9 @@ resources:
         - file:
             path: ./src/pipeline/gold.py
       configuration:
-        raw_root: /Volumes/${var.catalog}/${resources.schemas.rearc_quest.name}/raw
+        raw_root: /Volumes/${var.catalog}/${resources.schemas.bronze.name}/raw
+        silver_schema: ${var.catalog}.${resources.schemas.silver.name}
+        gold_schema: ${var.catalog}.${resources.schemas.gold.name}
 
   jobs:
     rearc_quest_job:
@@ -51,7 +62,7 @@ resources:
           spark_python_task:
             python_file: ./src/ingest.py
             parameters:
-              - --target=/Volumes/${var.catalog}/${resources.schemas.rearc_quest.name}/raw
+              - --target=/Volumes/${var.catalog}/${resources.schemas.bronze.name}/raw
               - --contact-email=${var.contact_email}
         - task_key: refresh_pipeline
           depends_on:

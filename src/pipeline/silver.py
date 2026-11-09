@@ -12,6 +12,8 @@ from pyspark import pipelines as dp
 from pyspark.sql import Window
 from pyspark.sql import functions as F
 
+SILVER = spark.conf.get("silver_schema")  # noqa: F821 - catalog.schema; bronze is the pipeline default
+
 # Row tracking + deletion vectors let the gold materialized views refresh incrementally.
 TABLE_PROPERTIES = {"delta.enableRowTracking": "true", "delta.enableDeletionVectors": "true"}
 
@@ -22,9 +24,10 @@ def active(source: str):
 
 
 def silver_table(name: str, keys: list[str], comment: str) -> None:
-    dp.create_streaming_table(name, comment=comment, table_properties=TABLE_PROPERTIES)
+    target = f"{SILVER}.{name}"
+    dp.create_streaming_table(target, comment=comment, table_properties=TABLE_PROPERTIES)
     dp.create_auto_cdc_from_snapshot_flow(
-        target=name, source=f"{name}_snapshot", keys=keys, stored_as_scd_type=1
+        target=target, source=f"{name}_snapshot", keys=keys, stored_as_scd_type=1
     )
 
 
