@@ -153,6 +153,35 @@ would quietly publish a plausible stddev over five years.
 - **Second run, with no upstream change:** silver's `MERGE` read 0 source rows and inserted, updated
   and deleted 0 rows. All three gold tables were planned as `NO_OP`.
 
+**Workspace screenshots.** These were taken on 2026-11-07, before silver moved to `AUTO CDC`, so the
+pipeline graph still shows the silver tables as materialized views. The gold answers are the same in
+the current design.
+
+Pipeline run: bronze → silver → gold, all flows completed and all expectations met.
+
+![Pipeline graph](docs/images/pipeline_graph.png)
+
+The pipeline succeeded. The job's red run is the `ingest` task: Free Edition blocks outbound access to
+bls.gov, so I ran ingestion locally and uploaded the files.
+
+![Jobs and pipelines](docs/images/jobs_and_pipelines.png)
+
+The resulting schema has 10 pipeline tables and the `raw` Volume.
+
+![Catalog tables](docs/images/catalog_tables.png)
+
+Q1: `gold_population_stats`
+
+![Q1 result](docs/images/q1_population_stats.png)
+
+Q2: `gold_best_year_by_series` (283 series)
+
+![Q2 result](docs/images/q2_best_year_count.png)
+
+Q3: `gold_series_population` (39 rows; population is null for years outside ACS 1-year coverage)
+
+![Q3 result](docs/images/q3_series_population.png)
+
 **Gold: SQL vs. PySpark.**
 - **Q1 and Q3: SQL is primary.** Each is a filter plus an aggregate or a join, which reads most
   clearly as SQL.
