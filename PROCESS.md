@@ -198,12 +198,8 @@ data):
 - **Second run, with no upstream change:** silver's `MERGE` read 0 source rows and inserted, updated
   and deleted 0 rows. All three gold tables were planned as `NO_OP`.
 
-**Workspace screenshots.** Some of these were taken before the split into bronze, silver and gold
-schemas, so they show the earlier single schema `dev_subratagayanhitk_rearc_quest`. The tables and
-results are the same.
-
-Pipeline run: bronze → `*_snapshot` views → silver → gold, all flows completed and all expectations
-met. The table list counts 13: the 10 tables plus the 3 temporary snapshot views.
+**Workspace screenshots.** Pipeline run in the bronze/silver/gold schemas: bronze → `*_snapshot`
+views → silver → gold, all flows completed and all expectations met. The table list counts 13: the 10 tables plus the 3 temporary snapshot views.
 
 ![Pipeline graph](docs/images/pipeline_graph.png)
 
@@ -361,6 +357,10 @@ SCHEMA  dev_..._gold         analyst        USE SCHEMA, SELECT
 SCHEMA  dev_..._silver       (no analyst grant; only account users' READ METADATA inherited)
 SCHEMA  dev_..._bronze       (no analyst grant; only account users' READ METADATA inherited)
 ```
+
+The grants as run in the SQL editor:
+
+![Grants to analyst](docs/images/access_to_analyst_principal1.png)
 
 `analyst` is an account-level group. Analysts get access by being added to it, and the grants never
 name individual users.
