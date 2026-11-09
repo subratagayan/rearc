@@ -39,14 +39,51 @@ Schema checks happen on the way in:
 
 Data files are matched by `*.data.*`, so a new BLS data partition is picked up without code changes.
 
-**Silver (SQL, materialized views).**
-- Silver joins bronze to `active_files`, so replaced and deleted files drop out. Their rows stay in
-  bronze for audit.
-- It trims the space-padded fields, casts types, and validates year, period and value with
-  expectations.
+**Silver (PySpark, `AUTO CDC FROM SNAPSHOT` into streaming tables).**
+- BLS and DataUSA publish full snapshots, not change events. For each silver table, a temporary
+  `*_snapshot` view builds the current snapshot:
+  - it joins bronze to `active_files`, so only the live file versions are used,
+  - it trims the space-padded fields and casts types,
+  - it de-duplicates to one row per key, because `pr.data.0.Current` and `pr.data.1.AllData` overlap,
+  - it validates year, period, value and population with expectations.
 - `value` is `DECIMAL(18,3)`, so sums are exact.
-- `pr.data.0.Current` and `pr.data.1.AllData` overlap, so silver keeps one row per
-  `(series_id, year, period)`.
+- `create_auto_cdc_from_snapshot_flow` (SCD type 1) diffs each snapshot against the previous one and
+  applies only the changes:
+  - a new key is **inserted**,
+  - a key whose values changed is **updated**,
+  - a key that disappeared is **deleted**, whether one row was removed or a whole file was deleted
+    upstream.
+- Unchanged rows are never rewritten. Replaced versions stay in bronze for audit.
+- Keys: `(series_id, year, period)` for observations, `series_id` for series, `(nation_id, year)` for
+  population.
+
+**Streaming tables vs. materialized views.**
+- **Bronze: streaming tables.** The raw files are immutable and append-only, which is exactly what
+  Auto Loader is built for. Each file version is read once and never re-scanned.
+- **`active_files`: materialized view.** It is one small state file that ingestion rewrites at the same
+  path. A streaming read would miss that rewrite, so it is re-read on every refresh.
+- **Silver: streaming tables written by `AUTO CDC`.** A plain streaming table is append-only and can't
+  retract rows. A materialized view recomputes from its inputs, and over a snapshot with no row
+  lineage that tends to mean a full recompute. `AUTO CDC FROM SNAPSHOT` writes only the inserts,
+  updates and deletes, and it records them in the change feed for the next layer.
+- **Gold: materialized views.** Gold is small, derived answers: aggregates, a window and a join over
+  silver. Materialized views always return the same result a batch query would, and on serverless they
+  refresh incrementally from silver's row-level changes. Gold doesn't join `active_files`, because
+  silver already contains only the active versions.
+
+**Is gold incremental?** Usually yes, but serverless decides on each refresh, based on cost and on
+whether the query is supported:
+- The silver tables are streaming tables with row tracking and deletion vectors enabled, which makes
+  them supported sources for incremental refresh.
+- **Q3** (`gold_series_population`) is a filter plus a LEFT JOIN, so it can refresh incrementally
+  (`ROW_BASED`).
+- **Q2** (`gold_best_year_by_series`) is a `GROUP BY` over a `DECIMAL` sum, then `row_number()`
+  partitioned by `series_id`, so it can refresh incrementally (`GROUP_AGGREGATE` / `WINDOW_FUNCTION`).
+  Only series whose rows changed are recomputed.
+- **Q1** (`gold_population_stats`) computes `avg` and `stddev`, which work on `DOUBLE`, and Databricks
+  fully recomputes floating-point aggregates. That costs nothing here: the query reads six rows.
+- The technique each refresh actually used is logged in the pipeline event log under
+  `event_type = 'planning_information'`.
 
 **Gold: SQL vs. PySpark.**
 - **Q1 and Q3: SQL is primary.** Each is a filter plus an aggregate or a join, which reads most
@@ -68,8 +105,10 @@ Data files are matched by `*.data.*`, so a new BLS data partition is picked up w
 ## Trade-offs
 
 What I'd do differently for a real client:
-- **Data volume.** Replace the silver MV with `AUTO CDC FROM SNAPSHOT`, so unchanged rows are never
-  recomputed. Expire old raw versions with a retention job.
+- **Data volume.** Silver writes only the changes, but it still reads the active snapshot on every
+  update to compute the diff. At larger scale I'd switch to historical snapshots keyed on the ingest
+  version, so a run with no upstream change skips silver entirely. I'd also expire old raw versions
+  with a retention job.
 - **Schema drift.** Today any drift fails fast. I'd add a rescued-data column plus alerts, so additive
   changes don't block the pipeline.
 - **Access control.** Use separate schemas per layer, give consumers grants on gold only, and run jobs
@@ -94,6 +133,9 @@ How I validated and corrected its output:
   1. The first draft was over-engineered.
   2. The simpler second draft re-read every file on each refresh.
   3. The final design uses streaming bronze over immutable file versions.
+- **I rejected full recompute in silver.** An earlier version made silver materialized views and
+  argued that recomputing them was cheap. I changed silver to `AUTO CDC FROM SNAPSHOT`, so it applies
+  only inserts, updates and deletes, and kept materialized views for gold.
 - **I tested change handling.** I simulated an upstream change to `pr.series`. Bronze held both
   versions and silver showed only the active one.
 - **I fixed portability issues.** `QUALIFY` failed on open-source Spark, so I rewrote it as a

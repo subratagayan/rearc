@@ -34,7 +34,7 @@ resources:
         - file:
             path: ./src/pipeline/bronze.py
         - file:
-            path: ./src/pipeline/silver.sql
+            path: ./src/pipeline/silver.py
         - file:
             path: ./src/pipeline/gold.sql
         - file:
