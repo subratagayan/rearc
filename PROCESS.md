@@ -336,6 +336,16 @@ TABLE   gold_best_year_by_series  analyst        SELECT        (same for the oth
 TABLE   silver_bls_observations   (no analyst grant; it inherits only account users' READ METADATA)
 ```
 
+`analyst` is an account-level group. Analysts get access by being added to it, and the grants never
+name individual users.
+
+![analyst group](docs/images/access_to_analyst_principal2.png)
+
+The grant statements as run in the SQL editor: the schema-level `SELECT` is revoked and replaced by
+`SELECT` on the three gold tables.
+
+![Grants to analyst](docs/images/access_to_analyst_principal1.png)
+
 ### Deployed with Databricks Asset Bundles
 
 Nothing was created by clicking through the UI. `databricks.yml` declares all four resources:
