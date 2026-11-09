@@ -176,8 +176,9 @@ would quietly publish a plausible stddev over five years.
 - **Second run, with no upstream change:** silver's `MERGE` read 0 source rows and inserted, updated
   and deleted 0 rows. All three gold tables were planned as `NO_OP`.
 
-**Workspace screenshots.** Pipeline run: bronze → silver → gold, all flows completed and all
-expectations met.
+**Workspace screenshots.** Pipeline run: bronze → `*_snapshot` views → silver → gold, all flows
+completed and all expectations met. The table list counts 13: the 10 tables plus the 3 temporary
+snapshot views.
 
 ![Pipeline graph](docs/images/pipeline_graph.png)
 
@@ -210,6 +211,14 @@ Q3: `gold_series_population` (39 rows; population is null for years outside ACS 
 - Each question also has an alternative in the other language (`alternatives.py`,
   `alternatives.sql`). These are documentation only and not deployed. I checked locally that each pair
   returns identical rows.
+
+**Data decisions, based on the provider docs:**
+- Q2 excludes `Q05`. `pr.period` defines it as the annual average, so including it would double count.
+- 54 series publish only annual averages, so 283 of the 337 series appear in Q2.
+- Q2 ties go to the earliest year. The label is BLS's `series_title`.
+- Q1 reports the sample stddev, plus the population stddev for reference. The update fails if any of
+  the six years is missing.
+- Q3 uses a LEFT JOIN, because ACS 1-year data doesn't exist before 2013 or for 2020.
 
 ## Trade-offs
 
