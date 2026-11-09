@@ -230,8 +230,9 @@ What I'd do differently for a real client:
   with a retention job.
 - **Schema drift.** Today any drift fails fast. I'd add a rescued-data column plus alerts, so additive
   changes don't block the pipeline.
-- **Access control.** Use separate schemas per layer, give consumers grants on gold only, and run jobs
-  as a service principal.
+- **Access control.** The analyst already gets gold-only table grants (see Bonus). For a client I'd
+  also put each layer in its own schema, so a schema-level grant on gold is safe and covers new gold
+  tables automatically. I'd manage grants in the bundle and run jobs as a service principal.
 - **Monitoring.** Alert on expectation metrics from the pipeline event log, send job failure
   notifications, and add a freshness check against the BLS release calendar.
 - **Cost.** Run serverless on a daily or release-aligned schedule. A run with no upstream changes
@@ -265,6 +266,10 @@ How I validated and corrected its output:
   values, and the workspace results match the local run.
 - **I checked incrementality on the workspace rather than trusting the docs.** I used the Delta
   history (`MERGE` metrics) and the event log (`planning_information`).
+- **I audited the access grants.** My first version granted `SELECT` on the whole schema. A review
+  with the assistant pointed out two problems: that grant also exposed bronze, silver and
+  `active_files`, and `account users` held `ALL PRIVILEGES` on the catalog. I replaced the first with
+  table-level grants on gold, revoked the second, and checked the result with `SHOW GRANTS`.
 
 ## Retrospective
 
@@ -276,3 +281,107 @@ The data semantics were harder to get right than the code:
 
 The other hard part was making re-runs correct when files change or disappear upstream, given how
 Auto Loader tracks files. That led to the versioned-path design.
+
+## Bonus
+
+### Genie space and dashboard on the gold layer
+
+**Genie space.** A non-technical user asks questions in plain English, and Genie answers from the gold
+tables. Asked "What is the average US population?", it returns 322,069,808, which matches Q1.
+
+![Genie space](docs/images/genie_agent.png)
+
+**Dashboard: "BLS & Population Gold Layer Insights".** It has two pages, both built only on gold
+tables.
+
+The first page, *Best Year by Series*, shows the 283 series tracked and the top 20 series by
+best-year value, labelled with `series_title`.
+
+![Dashboard: best year by series](docs/images/dashboard1.png)
+
+The second page, *Population & Series Trends*, shows:
+- the 2013–2018 average population (322.07M, Q1),
+- the Q01 trend for `PRS30006032` (Q3),
+- the US population trend.
+
+![Dashboard: population and series trends](docs/images/dashboard2.png)
+
+### Unity Catalog access for a read-only analyst
+
+The `analyst` principal can read the three gold tables and nothing else. The grants are in
+`sql/grant_gold_readonly_analyst.sql`:
+
+| Object | `analyst` gets | Why |
+|---|---|---|
+| Catalog `rearc` | `USE CATALOG` | needed to reach the schema; gives no data access |
+| Schema `dev_..._rearc_quest` | `USE SCHEMA` | needed to reach the tables; gives no data access |
+| `gold_population_stats`, `gold_best_year_by_series`, `gold_series_population` | `SELECT` | the only data the analyst can read |
+| bronze, silver, `active_files`, the `raw` Volume | nothing | |
+
+- **Table-level, not schema-level.** All layers share one schema in this bundle, so `SELECT ON SCHEMA`
+  would also expose bronze and silver. I granted `SELECT` on each gold table instead.
+- **Default catalog grants removed.** The catalog gave `account users` `ALL PRIVILEGES` and `MANAGE`,
+  which would let any user, the analyst included, modify or drop tables. I revoked both, along with
+  `EXTERNAL USE SCHEMA`. Only `READ METADATA` remains.
+- **Read-only.** The analyst has no `MODIFY`, `CREATE` or `MANAGE`, and owns nothing. The owner and
+  pipeline identity, `subratagayanhitk@gmail.com`, is unaffected.
+
+The grants were verified with `SHOW GRANTS` on 2026-11-09:
+
+```
+CATALOG rearc                     analyst        USE CATALOG
+                                  account users  READ METADATA
+SCHEMA  dev_..._rearc_quest       analyst        USE SCHEMA
+TABLE   gold_best_year_by_series  analyst        SELECT        (same for the other two gold tables)
+TABLE   silver_bls_observations   (no analyst grant; it inherits only account users' READ METADATA)
+```
+
+### Deployed with Databricks Asset Bundles
+
+Nothing was created by clicking through the UI. `databricks.yml` declares all four resources:
+- the schema,
+- the managed `raw` Volume,
+- the serverless pipeline, with its source files and `raw_root` configuration,
+- the job, with an `ingest` task followed by a `refresh_pipeline` task.
+
+The catalog and contact email are passed as bundle variables. The `dev` target runs in development
+mode, so resource names get a `[dev subratagayanhitk]` prefix and the schema becomes
+`dev_subratagayanhitk_rearc_quest`. Both are visible in the screenshots above.
+
+The commands I ran:
+
+```bash
+databricks bundle validate --var catalog=rearc --var contact_email=...
+databricks bundle deploy   --var catalog=rearc --var contact_email=...
+databricks bundle run rearc_quest_pipeline --var catalog=rearc --var contact_email=...
+```
+
+`bundle deploy`, run after dropping the schema, created everything again from code:
+
+```
+Uploading bundle files to /Workspace/Users/subratagayanhitk@gmail.com/.bundle/rearc_quest/dev/files...
+Created schemas.rearc_quest
+Updated pipelines.rearc_quest_pipeline
+Created volumes.raw
+Resources: 2 created, 1 changed, 0 deleted, 1 unchanged
+```
+
+`bundle validate` and `bundle summary` show the deployed resources:
+
+```
+Name: rearc_quest
+Target: dev
+Workspace:
+  User: subratagayanhitk@gmail.com
+  Path: /Workspace/Users/subratagayanhitk@gmail.com/.bundle/rearc_quest/dev
+Validation OK!
+
+Resources:
+  Jobs:      rearc_quest_job      -> [dev subratagayanhitk] rearc_quest_job
+  Pipelines: rearc_quest_pipeline -> [dev subratagayanhitk] rearc_quest_pipeline
+  Schemas:   rearc_quest          -> dev_subratagayanhitk_rearc_quest
+  Volumes:   raw                  -> raw
+```
+
+A prod deployment would add a `prod` target with its own catalog and a service principal as
+`run_as`. The code would not change.

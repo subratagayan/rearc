@@ -12,6 +12,7 @@ src/pipeline/silver.py      AUTO CDC FROM SNAPSHOT: incremental insert/update/de
 src/pipeline/gold.sql       Q1, Q3 (primary, Spark SQL)
 src/pipeline/gold.py        Q2 (primary, PySpark)
 src/pipeline/alternatives.* Q1/Q3 in PySpark, Q2 in Spark SQL (documented, not run by the pipeline)
+sql/grant_gold_readonly_analyst.sql  Unity Catalog grants: read-only analyst on the gold tables only
 ```
 
 ## Deploy and run
