@@ -57,33 +57,59 @@ Data files are matched by `*.data.*`, so a new BLS data partition is picked up w
 - Keys: `(series_id, year, period)` for observations, `series_id` for series, `(nation_id, year)` for
   population.
 
-**Streaming tables vs. materialized views.**
-- **Bronze: streaming tables.** The raw files are immutable and append-only, which is exactly what
-  Auto Loader is built for. Each file version is read once and never re-scanned.
-- **`active_files`: materialized view.** It is one small state file that ingestion rewrites at the same
-  path. A streaming read would miss that rewrite, so it is re-read on every refresh.
-- **Silver: streaming tables written by `AUTO CDC`.** A plain streaming table is append-only and can't
-  retract rows. A materialized view recomputes from its inputs, and over a snapshot with no row
-  lineage that tends to mean a full recompute. `AUTO CDC FROM SNAPSHOT` writes only the inserts,
-  updates and deletes, and it records them in the change feed for the next layer.
-- **Gold: materialized views.** Gold is small, derived answers: aggregates, a window and a join over
-  silver. Materialized views always return the same result a batch query would, and on serverless they
-  refresh incrementally from silver's row-level changes. Gold doesn't join `active_files`, because
-  silver already contains only the active versions.
+**Streaming tables vs. materialized views.** A Spark Declarative Pipeline creates and manages three
+kinds of dataset: streaming tables, materialized views and temporary views. It creates them on the
+first run, so nothing needs a `CREATE TABLE` upfront. Both streaming tables and materialized views are
+ordinary Unity Catalog Delta tables that consumers query with plain SQL. Only the pipeline writes to
+them. "Streaming" here describes how a flow writes the table, not a job that's always running: this
+pipeline is triggered, so it processes what changed and then stops.
+- **Bronze: streaming tables (Auto Loader).** The raw files are immutable and append-only, which is
+  what Auto Loader is built for. Each file version is read once and never re-scanned.
+- **`active_files`: materialized view.** It is one small state file that ingestion rewrites at the
+  same path. A streaming read would miss that rewrite, so it is re-read on every refresh.
+- **Silver: streaming tables written by `AUTO CDC FROM SNAPSHOT`.**
+  - Silver must retract rows when a file version is replaced or deleted upstream.
+  - A streaming table written by a plain append flow can't retract rows.
+  - A materialized view over a snapshot, which has no row lineage, tends to recompute everything.
+  - In a pipeline, only a streaming table can be the target of an `AUTO CDC` flow. That flow writes
+    just the inserts, updates and deletes, as a `MERGE`, and gold can refresh from those row-level
+    changes.
+- **Gold: materialized views.** Gold is small derived answers: aggregates, a window and a join over
+  silver. A materialized view always returns the same result as the equivalent batch query, and
+  serverless refreshes it incrementally where it can. Gold doesn't join `active_files`, because silver
+  already contains only the active versions.
 
-**Is gold incremental?** Usually yes, but serverless decides on each refresh, based on cost and on
-whether the query is supported:
-- The silver tables are streaming tables with row tracking and deletion vectors enabled, which makes
-  them supported sources for incremental refresh.
-- **Q3** (`gold_series_population`) is a filter plus a LEFT JOIN, so it can refresh incrementally
-  (`ROW_BASED`).
-- **Q2** (`gold_best_year_by_series`) is a `GROUP BY` over a `DECIMAL` sum, then `row_number()`
-  partitioned by `series_id`, so it can refresh incrementally (`GROUP_AGGREGATE` / `WINDOW_FUNCTION`).
-  Only series whose rows changed are recomputed.
-- **Q1** (`gold_population_stats`) computes `avg` and `stddev`, which work on `DOUBLE`, and Databricks
-  fully recomputes floating-point aggregates. That costs nothing here: the query reads six rows.
-- The technique each refresh actually used is logged in the pipeline event log under
+**Is gold incremental?** Serverless decides on each refresh, based on cost and on whether the query is
+supported. The silver tables have row tracking and deletion vectors enabled, which makes them supported
+sources.
+- **No silver change:** gold is skipped (`NO_OP`). This was verified on the workspace, see below.
+- **Silver rows changed:**
+  - **Q3** (`gold_series_population`) is a filter plus a LEFT JOIN, so it can refresh incrementally
+    (`ROW_BASED`).
+  - **Q2** (`gold_best_year_by_series`) is a `GROUP BY` over a `DECIMAL` sum, then `row_number()`
+    partitioned by `series_id`, so it can refresh incrementally (`GROUP_AGGREGATE` /
+    `WINDOW_FUNCTION`). Only the series whose rows changed are recomputed.
+  - **Q1** (`gold_population_stats`) uses `avg` and `stddev`, which work on `DOUBLE`. Databricks
+    recomputes floating-point aggregates in full, but the query reads only six rows.
+- **First build:** every gold table runs as `COMPLETE_RECOMPUTE`.
+- The technique each refresh used is in the pipeline event log, under
   `event_type = 'planning_information'`.
+
+**Verified on the workspace** (the schema was dropped and rebuilt from scratch, 2026-11-09 data):
+
+| Table | Rows |
+|---|---|
+| `bronze_bls_data` | 138,489 |
+| `silver_bls_observations` | 92,328 (no duplicate keys) |
+| `silver_bls_series` | 337 |
+| `silver_population` | 11 |
+| `gold_best_year_by_series` | 283 |
+| `gold_series_population` | 39 |
+| `gold_population_stats` | 6 years |
+
+- **First run:** silver's `MERGE` inserted 92,328 rows.
+- **Second run, with no upstream change:** silver's `MERGE` read 0 source rows and inserted, updated
+  and deleted 0 rows. All three gold tables were planned as `NO_OP`.
 
 **Gold: SQL vs. PySpark.**
 - **Q1 and Q3: SQL is primary.** Each is a filter plus an aggregate or a join, which reads most
@@ -144,6 +170,8 @@ How I validated and corrected its output:
   files came from reading `pr.txt` and the raw files, not from the AI's assumptions.
 - **I verified the answers by hand.** For example, I computed the Q1 mean from the six population
   values, and the workspace results match the local run.
+- **I checked incrementality on the workspace rather than trusting the docs.** I used the Delta
+  history (`MERGE` metrics) and the event log (`planning_information`).
 
 ## Retrospective
 

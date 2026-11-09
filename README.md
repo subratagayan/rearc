@@ -32,7 +32,10 @@ databricks fs cp -r --overwrite ./raw dbfs:/Volumes/<catalog>/<schema>/raw
 databricks bundle run rearc_quest_pipeline
 ```
 
-## Answers (from a local run on 2026-11-07 data)
+Keep the local `./raw` folder between runs. Its `_state/active_files.json` decides what is new, so it
+has to stay in step with the Volume.
+
+## Answers (workspace run on 2026-11-09 data, matching the earlier local run)
 
 | Question | Table | Result |
 |---|---|---|
@@ -40,4 +43,4 @@ databricks bundle run rearc_quest_pipeline
 | Q2 best year per series | `gold_best_year_by_series` | 283 series, e.g. PRS30006011 → 2022 (16.4) |
 | Q3 PRS30006032 Q01 + population | `gold_series_population` | 39 years, population where ACS has it |
 
-Workspace screenshots of the pipeline run and results are in [PROCESS.md](PROCESS.md#workspace-screenshots).
+Architecture decisions, trade-offs and validation are in [PROCESS.md](PROCESS.md).
