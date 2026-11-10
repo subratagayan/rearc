@@ -208,14 +208,6 @@ Q3: `gold_series_population` (39 rows; population is null for years outside ACS 
   `alternatives.sql`). These are documentation only and not deployed. I checked locally that each pair
   returns identical rows.
 
-**Data decisions, based on the provider docs:**
-- Q2 excludes `Q05`. `pr.period` defines it as the annual average, so including it would double count.
-- 54 series publish only annual averages, so 283 of the 337 series appear in Q2.
-- Q2 ties go to the earliest year. The label is BLS's `series_title`.
-- Q1 reports the sample stddev, plus the population stddev for reference. Missing years are caught by
-  the gold guard above.
-- Q3 uses a LEFT JOIN, because ACS 1-year data doesn't exist before 2013 or for 2020.
-
 ## Trade-offs
 
 What I'd do differently for a real client:
