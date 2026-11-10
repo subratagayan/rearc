@@ -124,21 +124,6 @@ Volume raw: one folder per file version
   serverless refreshes it incrementally where it can. Gold doesn't join `active_files`, because silver
   already contains only the active versions.
 
-**Is gold incremental?** Yes, where the query shape allows it.
-- **Why it can be:** silver's `AUTO CDC` flow writes only changed rows, and silver has row tracking
-  and deletion vectors enabled. So silver records which rows were inserted, updated or deleted.
-- **How:** on each refresh, serverless (Enzyme) reads silver's row changes since gold's last refresh
-  and picks the cheapest correct technique for each gold table. The choice is logged under
-  `event_type = 'planning_information'`.
-- **What it touches:**
-  - **Q3** is a filter plus a LEFT JOIN, so only the years whose input rows changed are refreshed.
-  - **Q2** is a `GROUP BY` plus `row_number()` by `series_id`, so only the series whose rows changed
-    are recomputed.
-  - **Q1** is a `COMPLETE_RECOMPUTE`, because `avg`/`stddev` on `DOUBLE` can't be merged, but it
-    reads only six rows.
-- No silver change means `NO_OP` for all three, which was verified on the workspace (see below). The
-first build is always `COMPLETE_RECOMPUTE`.
-
 **How the silver diff works.** On every update, `AUTO CDC FROM SNAPSHOT` reads the whole
 `*_snapshot` view and compares it with the target, key by key:
 - a new key is inserted,
@@ -148,17 +133,6 @@ first build is always `COMPLETE_RECOMPUTE`.
 
 So the read is a full scan of the active data (about 92k rows), while the write is proportional to
 what changed. `version` is not a silver column, so re-ingesting identical content writes nothing.
-
-**`AUTO CDC` vs. a hand-written `MERGE`.** A `MERGE ... WHEN NOT MATCHED BY SOURCE THEN DELETE` over
-the same snapshot would produce the same table. Gold could still refresh incrementally, because Enzyme
-works from any Delta source with row tracking. I chose `AUTO CDC` because it keeps silver inside the
-pipeline, which gives:
-- dependency ordering,
-- expectations and event-log metrics,
-- checkpointing,
-- key handling, with no `MERGE` statement to keep in sync with the snapshot's columns.
-
-A separate `MERGE` job would only make sense if something outside the pipeline had to write to silver.
 
 **Why not CDF-based `AUTO CDC`.** Bronze is append-only, loaded from files:
 - A republished file arrives as a new set of inserts, not as updates.
