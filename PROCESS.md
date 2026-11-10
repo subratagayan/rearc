@@ -123,21 +123,21 @@ Volume raw: one folder per file version
   serverless refreshes it incrementally where it can. Gold doesn't join `active_files`, because silver
   already contains only the active versions.
 
-**Is gold incremental?** Serverless decides on each refresh, based on cost and on whether the query is
-supported. The silver tables have row tracking and deletion vectors enabled, which makes them supported
-sources.
-- **No silver change:** gold is skipped (`NO_OP`). This was verified on the workspace, see below.
-- **Silver rows changed:**
-  - **Q3** (`gold_series_population`) is a filter plus a LEFT JOIN, so it can refresh incrementally
-    (`ROW_BASED`).
-  - **Q2** (`gold_best_year_by_series`) is a `GROUP BY` over a `DECIMAL` sum, then `row_number()`
-    partitioned by `series_id`, so it can refresh incrementally (`GROUP_AGGREGATE` /
-    `WINDOW_FUNCTION`). Only the series whose rows changed are recomputed.
-  - **Q1** (`gold_population_stats`) uses `avg` and `stddev`, which work on `DOUBLE`. Databricks
-    recomputes floating-point aggregates in full, but the query reads only six rows.
-- **First build:** every gold table runs as `COMPLETE_RECOMPUTE`.
-- The technique each refresh used is in the pipeline event log, under
-  `event_type = 'planning_information'`.
+**Is gold incremental?** Yes, where the query shape allows it.
+- **Why it can be:** silver's `AUTO CDC` flow writes only changed rows, and silver has row tracking
+  and deletion vectors enabled. So silver records which rows were inserted, updated or deleted.
+- **How:** on each refresh, serverless (Enzyme) reads silver's row changes since gold's last refresh.
+  It then picks the cheapest correct technique for each gold table. The choice is logged in the event
+  log under `event_type = 'planning_information'`.
+
+| Gold table | Query shape | Technique | What is touched when silver changes |
+|---|---|---|---|
+| Q3 `gold_series_population` | filter + LEFT JOIN | `ROW_BASED` | only the output rows (years) whose input rows changed |
+| Q2 `gold_best_year_by_series` | `GROUP BY` sum + `row_number()` by `series_id` | `GROUP_AGGREGATE` / `WINDOW_FUNCTION` | only the series whose rows changed; the others are untouched |
+| Q1 `gold_population_stats` | `avg` / `stddev` on `DOUBLE` | `COMPLETE_RECOMPUTE` | the whole table, but it reads only six rows |
+
+No silver change means `NO_OP` for all three, which was verified on the workspace (see below). The
+first build is always `COMPLETE_RECOMPUTE`.
 
 **How the silver diff works.** On every update, `AUTO CDC FROM SNAPSHOT` reads the whole
 `*_snapshot` view and compares it with the target, key by key:
