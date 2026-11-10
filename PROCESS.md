@@ -306,24 +306,6 @@ The `analyst` principal can read the gold layer and nothing else. The grants are
 | Schema `dev_..._gold` | `USE SCHEMA`, `SELECT` | reads all gold tables, including gold tables added later |
 | Schemas `dev_..._silver`, `dev_..._bronze` (including the `raw` Volume) | nothing | |
 
-- **Schema-level grant on gold.** Each layer has its own schema, so `SELECT ON SCHEMA` on gold
-  exposes only the three answer tables. It also covers new gold tables without another grant.
-- **Default catalog grants removed.** The catalog gave `account users` `ALL PRIVILEGES` and `MANAGE`,
-  which would let any user, the analyst included, modify or drop tables. I revoked both, along with
-  `EXTERNAL USE SCHEMA`. Only `READ METADATA` remains.
-- **Read-only.** The analyst has no `MODIFY`, `CREATE` or `MANAGE`, and owns nothing. The owner and
-  pipeline identity, `subratagayanhitk@gmail.com`, is unaffected.
-
-The grants were verified with `SHOW GRANTS` on 2026-11-09:
-
-```
-CATALOG rearc                analyst        USE CATALOG
-                             account users  READ METADATA
-SCHEMA  dev_..._gold         analyst        USE SCHEMA, SELECT
-SCHEMA  dev_..._silver       (no analyst grant; only account users' READ METADATA inherited)
-SCHEMA  dev_..._bronze       (no analyst grant; only account users' READ METADATA inherited)
-```
-
 The grants as run in the SQL editor:
 
 ![Grants to analyst](docs/images/access_to_analyst_principal1.png)
