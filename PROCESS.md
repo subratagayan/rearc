@@ -75,12 +75,13 @@ Data files are matched by `*.data.*`, so a new BLS data partition is picked up w
 - Keys: `(series_id, year, period)` for observations, `series_id` for series, `(nation_id, year)` for
   population.
 
-**Streaming tables vs. materialized views.** A Spark Declarative Pipeline creates and manages three
-kinds of dataset: streaming tables, materialized views and temporary views. It creates them on the
-first run, so nothing needs a `CREATE TABLE` upfront. Both streaming tables and materialized views are
-ordinary Unity Catalog Delta tables that consumers query with plain SQL. Only the pipeline writes to
-them. "Streaming" here describes how a flow writes the table, not a job that's always running: this
-pipeline is triggered, so it processes what changed and then stops.
+**Streaming tables vs. materialized views.** A pipeline manages three dataset types. Streaming tables
+and materialized views are both ordinary UC Delta tables that consumers query with plain SQL, and only
+the pipeline writes to them. The difference is how they're written: a streaming table is filled by a
+flow (Auto Loader, `AUTO CDC`), while a materialized view stores a query's result and is refreshed when
+the query or its sources change (NO_OP, incremental or full). "Streaming" describes the write path, not
+a job that's always running. Temporary views are stored nowhere; the pipeline uses them for the
+silver snapshots.
 
 ```
 [bronze schema]
@@ -126,17 +127,16 @@ Volume raw: one folder per file version
 **Is gold incremental?** Yes, where the query shape allows it.
 - **Why it can be:** silver's `AUTO CDC` flow writes only changed rows, and silver has row tracking
   and deletion vectors enabled. So silver records which rows were inserted, updated or deleted.
-- **How:** on each refresh, serverless (Enzyme) reads silver's row changes since gold's last refresh.
-  It then picks the cheapest correct technique for each gold table. The choice is logged in the event
-  log under `event_type = 'planning_information'`.
-
-| Gold table | Query shape | Technique | What is touched when silver changes |
-|---|---|---|---|
-| Q3 `gold_series_population` | filter + LEFT JOIN | `ROW_BASED` | only the output rows (years) whose input rows changed |
-| Q2 `gold_best_year_by_series` | `GROUP BY` sum + `row_number()` by `series_id` | `GROUP_AGGREGATE` / `WINDOW_FUNCTION` | only the series whose rows changed; the others are untouched |
-| Q1 `gold_population_stats` | `avg` / `stddev` on `DOUBLE` | `COMPLETE_RECOMPUTE` | the whole table, but it reads only six rows |
-
-No silver change means `NO_OP` for all three, which was verified on the workspace (see below). The
+- **How:** on each refresh, serverless (Enzyme) reads silver's row changes since gold's last refresh
+  and picks the cheapest correct technique for each gold table. The choice is logged under
+  `event_type = 'planning_information'`.
+- **What it touches:**
+  - **Q3** is a filter plus a LEFT JOIN, so only the years whose input rows changed are refreshed.
+  - **Q2** is a `GROUP BY` plus `row_number()` by `series_id`, so only the series whose rows changed
+    are recomputed.
+  - **Q1** is a `COMPLETE_RECOMPUTE`, because `avg`/`stddev` on `DOUBLE` can't be merged, but it
+    reads only six rows.
+- No silver change means `NO_OP` for all three, which was verified on the workspace (see below). The
 first build is always `COMPLETE_RECOMPUTE`.
 
 **How the silver diff works.** On every update, `AUTO CDC FROM SNAPSHOT` reads the whole
